@@ -1,12 +1,27 @@
 import logging
+from operator import add
 import time
 import json
 import time
 import csv
+import math
 
 # External Libraries
 import requests
 import pandas as pd
+
+
+def printnl(string):
+    print(f'{string} \n')
+
+
+def printTupleItems(tuple):
+    for item in tuple:
+        printnl(item)
+
+
+def round2(num):
+    return round(num, 2)
 
 
 def addToRow(fields, data, row=[]):
@@ -20,6 +35,37 @@ def addToRow(fields, data, row=[]):
 
 def dictKeyToSortBy(item):
   return item['order']
+
+
+def getMeanAggregate(df, key, keyString):
+    mean = df.groupby('hero_id')[key].mean()
+    max_mean = mean.max()
+    max_mean_hero_id = mean.idxmax()
+    min_mean = mean.min()
+    min_mean_hero_id = mean.idxmin()
+    return f'Highest average {keyString}= {round2(max_mean)} (Hero: {max_mean_hero_id})',\
+        f'Lowest average {keyString}= {round2(min_mean)} (Hero: {min_mean_hero_id})'
+
+
+def splitListOfHeroes(df):
+    df['list_of_picks_formatted_radiant'] = None
+    df['list_of_picks_formatted_dire'] = None
+    for index, row in df.iterrows():
+        try:
+            list_of_picks = json.loads(str(row['list_of_picks']).replace("'", '"'))
+            list_picks_formatted_radiant = []
+            list_picks_formatted_dire = []
+            if len(list_of_picks) == 10:
+                for i in range(10):
+                    if(list_of_picks[i]['team'] == 0):
+                        list_picks_formatted_radiant.append(list_of_picks[i]['hero_id'])
+                    else:
+                        list_picks_formatted_dire.append(list_of_picks[i]['hero_id'])
+            df.at[index, 'list_of_picks_formatted_radiant'] = list_picks_formatted_radiant
+            df.at[index, 'list_of_picks_formatted_dire'] = list_picks_formatted_dire
+        except json.decoder.JSONDecodeError:
+            continue
+    return df
 
 
 def populatePlayerMatchesDataInCsv(account_id, query_params={}, api_calls_limit=55, api_limit_duration_seconds=60):
@@ -94,49 +140,173 @@ def populatePlayerMatchesDataInCsv(account_id, query_params={}, api_calls_limit=
         logging.info('data has been written to .csv file')
 
 
-def getOverallPlayerAnalysis(pathToPlayerMatchesDataCsv):
-    print(f'reading data from .csv file. Path: {pathToPlayerMatchesDataCsv}')
+def getDf(path_to_player_matches_data_csv):
+    print(f'reading data from .csv file. Path: {path_to_player_matches_data_csv}')
     try:
-        
         pd.set_option('display.max_rows', None)
         pd.set_option('display.max_columns', None)
-        df = pd.read_csv(pathToPlayerMatchesDataCsv)
+        df = pd.read_csv(path_to_player_matches_data_csv)
+        df = df[df.hero_id != 0]
+
         print(f'read {len(df.index)} records from .csv file')
         print('\n')
-        print(f"Player (Account ID: {pathToPlayerMatchesDataCsv.split('-')[1]}) Analysis: ")
+        print(f"Player (Account ID: {path_to_player_matches_data_csv.split('-')[1]}) Analysis: ")
+        print()
+
+        # Additional Columns
+        df['gpm'] = df['total_gold'] / (df['duration'] / 60)
+        df['xpm'] = df['total_xp'] / (df['duration'] / 60)
+        df['win'] = ((df['isRadiant']) & (df['radiant_win'])) | ((df['isRadiant'] == False) & (df['radiant_win'] == False))
+
+        return df
+
+    except FileNotFoundError:
+        printnl(f'could not find the .csv file at path: {path_to_player_matches_data_csv}')
+        return None
+
+
+def getOverallPlayerAnalysis(path_to_player_matches_data_csv):
+    df = getDf(path_to_player_matches_data_csv)
+    if df:
+        win = df['win']
+        loss = (df['win'] == False)
 
         # Total wins and losses
-        match_win_condition_expression = ((df['isRadiant']) & (df['radiant_win'])) | ((df['isRadiant'] == False) & (df['radiant_win'] == False))
-        match_loss_condition_expression = ((df['isRadiant']) & (df['radiant_win'] == False)) | ((df['isRadiant'] == False) & (df['radiant_win']))
-
-        total_wins = df.where(match_win_condition_expression) \
+        total_wins = df.where(win) \
             .groupby('isRadiant')['radiant_win'] \
             .count() \
             .sum()
-        total_losses = df.where(match_loss_condition_expression) \
+        total_losses = df.where(loss) \
             .groupby('isRadiant')['radiant_win'] \
             .count() \
             .sum()
         total_matches = total_wins + total_losses
-        print(f'Total matches played= {total_matches}')
-        print(f'Total wins= {total_wins}')
-        print(f'Total losses= {total_losses}')
+        printnl(f'----General Stats----')
+        printnl(f'Total matches played= {total_matches}')
+        printnl(f'Total wins= {total_wins}')
+        printnl(f'Total losses= {total_losses}')
 
-        win_percentage = round(((total_wins / total_matches) * 100), 2)
-        loss_percentage = round(((total_losses / total_matches) * 100), 2)
-        print(f'Win percentage= {win_percentage}')
-        print(f'Loss percentage= {loss_percentage}')
+        win_percentage = round2((total_wins / total_matches) * 100)
+        loss_percentage = round2((total_losses / total_matches) * 100)
+        printnl(f'Win percentage= {win_percentage}')
+        printnl(f'Loss percentage= {loss_percentage}')
+        print()
 
-        # All hero stats
-        heroes_total_wins = df.where(match_win_condition_expression).groupby('hero_id')['hero_id'].count()
+        printnl(f'----Hero Based Stats----')
+        heroes_total_wins = df.where(win).groupby('hero_id')['hero_id'].count()
         heroes_total_wins = pd.DataFrame({'hero_id':heroes_total_wins.index, 'wins':heroes_total_wins.values})
-        heroes_total_losses = df.where(match_loss_condition_expression).groupby('hero_id')['hero_id'].count()
+        heroes_total_losses = df.where(loss).groupby('hero_id')['hero_id'].count()
         heroes_total_losses = pd.DataFrame({'hero_id':heroes_total_losses.index, 'losses':heroes_total_losses.values})
         heroes_matches_wins_losses = pd.merge(heroes_total_wins, heroes_total_losses, how="outer")
-        print(heroes_matches_wins_losses)
 
+        # Highest and Lowest Averages
+        printTupleItems(getMeanAggregate(df, 'gpm', 'Gold Per Minute'))
+        printTupleItems(getMeanAggregate(df, 'xpm', 'Experience Per Minute'))
+        printTupleItems(getMeanAggregate(df, 'kills', 'Kills'))
+        printTupleItems(getMeanAggregate(df, 'deaths', 'Deaths'))
+        printTupleItems(getMeanAggregate(df, 'assists', 'Assists'))
+        printTupleItems(getMeanAggregate(df, 'net_worth', 'Networth'))
+        printTupleItems(getMeanAggregate(df, 'hero_damage', 'Hero Damage'))
+        printTupleItems(getMeanAggregate(df, 'kda', 'KDA (Kills-Deaths-Assists)'))
+        printTupleItems(getMeanAggregate(df, 'last_hits', 'Last Hits'))
+        printTupleItems(getMeanAggregate(df, 'level', 'Level'))
+
+
+def getHeroPerformanceAgainst(path_to_player_matches_data_csv, hero_id, enemy_hero_id):
+    df = getDf(path_to_player_matches_data_csv)
+    if df is not None and not df.empty:
+        df = splitListOfHeroes(df)
+        # list_of_picks_formatted_radiant
+        for index, row in df.iterrows():
+            if row['list_of_picks_formatted_dire'] and hero_id in row['list_of_picks_formatted_dire']:
+                print("YES")
+        
+
+def getProTeamMatches(team_id, api_calls_limit=55, api_limit_duration_seconds=60):
+    api_calls_made = 0
+    filename = f"team-{team_id}-matches.csv"
+    matches_data = requests.get(f'https://api.opendota.com/api/teams/{team_id}/matches')
+    api_calls_made += 1
+    matches_data_json = json.loads(matches_data.text)
+    rows = []
+    count = 0
+    for match in matches_data_json:
+        if api_calls_made < api_calls_limit:
+            match_data = requests.get(f'https://api.opendota.com/api/matches/{match["match_id"]}')
+            match_data_json = json.loads(match_data.text)
+            match_data_keys = ['radiant']
+            match_fields = ['match_id', 'duration', 'first_blood_time', 'game_mode', 'dire_score', 'radiant_score', 'radiant_win', 'start_time', 'region', 'patch', 'throw', 'comeback', 'replay_url', 'picks_bans']
+            row = []
+            row = addToRow(match_data_keys, match, row)
+            row = addToRow(match_fields, match_data_json, row)
+            # Write to csv
+            rows.append(row)
+            count += 1
+            api_calls_made += 1
+            print(f'fetched {count} matches data')
+        else:
+            print('waiting for 60 sec')
+            time.sleep(api_limit_duration_seconds)
+            api_calls_made = 0
+    
+    with open(filename, 'w', newline='') as csvfile:
+        logging.info('writing data to .csv file...')
+        csvwriter = csv.writer(csvfile)
+        csvwriter.writerow(match_data_keys + match_fields)
+        csvwriter.writerows(rows)
+        logging.info('data has been written to .csv file')
+
+
+def draftAssistant(path_to_pro_team_matches_data_csv, enemy_heroes_list):
+    print(f'reading data from .csv file. Path: {path_to_pro_team_matches_data_csv}')
+    team_id = path_to_pro_team_matches_data_csv.split('-')[1]
+    try:
+        pd.set_option('display.max_rows', None)
+        pd.set_option('display.max_columns', None)
+        df = pd.read_csv(path_to_pro_team_matches_data_csv)
+
+        # Additional Columns
+        df['win'] = ((df['radiant']) & (df['radiant_win'])) | ((df['radiant'] == False) & (df['radiant_win'] == False))
+
+        print(f'read {len(df.index)} records from .csv file')
+        print('\n')
+        print(f"Team (Team ID: {team_id}) Analysis: ")
+        print()
+        
+        df_valid = df.where(df['radiant_win'].notnull())
+        df_picks_bans = df_valid.where(df_valid['picks_bans'].notnull())
+        wins = 0
+        losses = 0
+        for index, row in df_picks_bans.iterrows():
+            try:
+                picks_bans = json.loads(str(row['picks_bans']).replace("'", '"').replace('False','"FALSE"').replace('True', '"TRUE"'))
+                heroes_matched = 0
+                for pick_ban in picks_bans:
+                    if row['radiant'] and pick_ban['team'] == 1:
+                        if pick_ban['hero_id'] in enemy_heroes_list:
+                            heroes_matched += 1
+                        if heroes_matched == len(enemy_heroes_list):
+                            if row['radiant_win']:
+                                wins += 1
+                            else:
+                                losses += 1
+                            break
+                    elif not row['radiant'] and pick_ban['team'] == 0:
+                        if pick_ban['hero_id'] in enemy_heroes_list:
+                            heroes_matched += 1
+                        if heroes_matched == len(enemy_heroes_list):
+                            if row['radiant_win']:
+                                losses += 1
+                            else:
+                                wins += 1
+                            break
+            except json.decoder.JSONDecodeError:
+                continue
+        print(f'Wins against enemy heroes with id {enemy_heroes_list}= {wins}')
+        print(f'Losses against enemy heroes with id {enemy_heroes_list}= {losses}')
+        
     except FileNotFoundError:
-        print(f'could not find the .csv file at path: {pathToPlayerMatchesDataCsv}')
+        printnl(f'could not find the .csv file at path: {path_to_pro_team_matches_data_csv}')
 
 
 def main():
@@ -144,7 +314,13 @@ def main():
     # logging.basicConfig(filename=f'main-log-{str(time.time())}.log', filemode='w', format='%(name)s - %(levelname)s - %(message)s', level=logging.DEBUG)  
 
     # populatePlayerMatchesDataInCsv(108755293)
-    getOverallPlayerAnalysis("player-108755293-matches.csv")
+    path_player_matches_data = "player-108755293-matches.csv"
+    # getOverallPlayerAnalysis(path_player_matches_data)
+    # getHeroPerformanceAgainst(path, 1, 4)
+    # getProTeamMatches(2586976)
+    path_pro_team_matches_data = "team-2586976-matches.csv"
+    enemy_heroes_list = [97, 98, 20]
+    draftAssistant(path_pro_team_matches_data, enemy_heroes_list)
 
 
 if __name__ == "__main__":
