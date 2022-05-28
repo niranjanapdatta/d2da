@@ -1,14 +1,15 @@
 import logging
-from operator import add
 import time
 import json
 import time
 import csv
 import math
+import operator
 
 # External Libraries
 import requests
 import pandas as pd
+import seaborn as sns
 
 
 def printnl(string):
@@ -38,13 +39,22 @@ def dictKeyToSortBy(item):
 
 
 def getMeanAggregate(df, key, keyString):
+    hero_data = requests.get('https://api.opendota.com/api/heroes')
+    hero_data_json = json.loads(hero_data.text)
     mean = df.groupby('hero_id')[key].mean()
     max_mean = mean.max()
     max_mean_hero_id = mean.idxmax()
     min_mean = mean.min()
     min_mean_hero_id = mean.idxmin()
-    return f'Highest average {keyString}= {round2(max_mean)} (Hero: {max_mean_hero_id})',\
-        f'Lowest average {keyString}= {round2(min_mean)} (Hero: {min_mean_hero_id})'
+    max_hero = ''
+    min_hero = ''
+    for hero in hero_data_json:
+        if hero['id'] == max_mean_hero_id:
+            max_hero = hero['localized_name']
+        if hero['id'] == min_mean_hero_id:
+            min_hero = hero['localized_name']
+    return f'Highest average {keyString}= {round2(max_mean)} (Hero: {max_hero})',\
+        f'Lowest average {keyString}= {round2(min_mean)} (Hero: {min_hero})'
 
 
 def splitListOfHeroes(df):
@@ -167,7 +177,7 @@ def getDf(path_to_player_matches_data_csv):
 
 def getOverallPlayerAnalysis(path_to_player_matches_data_csv):
     df = getDf(path_to_player_matches_data_csv)
-    if df:
+    if df is not None and not df.empty:
         win = df['win']
         loss = (df['win'] == False)
 
@@ -258,6 +268,10 @@ def getProTeamMatches(team_id, api_calls_limit=55, api_limit_duration_seconds=60
 
 
 def draftAssistant(path_to_pro_team_matches_data_csv, enemy_heroes_list):
+    print('----DRAFT ASSISSTANT----\n')
+    if len(enemy_heroes_list) > 5 or len(enemy_heroes_list) < 1:
+        print(f'Please provide 1-5 enemy hero ids')
+        return 0, 0, 0, 0
     print(f'reading data from .csv file. Path: {path_to_pro_team_matches_data_csv}')
     team_id = path_to_pro_team_matches_data_csv.split('-')[1]
     try:
@@ -277,6 +291,7 @@ def draftAssistant(path_to_pro_team_matches_data_csv, enemy_heroes_list):
         df_picks_bans = df_valid.where(df_valid['picks_bans'].notnull())
         wins = 0
         losses = 0
+        best_heroes_against = {}
         for index, row in df_picks_bans.iterrows():
             try:
                 picks_bans = json.loads(str(row['picks_bans']).replace("'", '"').replace('False','"FALSE"').replace('True', '"TRUE"'))
@@ -288,6 +303,12 @@ def draftAssistant(path_to_pro_team_matches_data_csv, enemy_heroes_list):
                         if heroes_matched == len(enemy_heroes_list):
                             if row['radiant_win']:
                                 wins += 1
+                                for pick in picks_bans:
+                                    if pick['team'] == 0:
+                                        if pick['hero_id'] in best_heroes_against:
+                                            best_heroes_against.update({pick['hero_id']: (best_heroes_against.get(pick['hero_id']) + 1)})
+                                        else:
+                                            best_heroes_against.update({pick['hero_id']: 1})
                             else:
                                 losses += 1
                             break
@@ -299,28 +320,66 @@ def draftAssistant(path_to_pro_team_matches_data_csv, enemy_heroes_list):
                                 losses += 1
                             else:
                                 wins += 1
+                                for pick in picks_bans:
+                                    if pick['team'] == 1:
+                                        if pick['hero_id'] in best_heroes_against:
+                                            best_heroes_against.update({pick['hero_id']: (best_heroes_against.get(pick['hero_id']) + 1)})
+                                        else:
+                                            best_heroes_against.update({pick['hero_id']: 1})
                             break
             except json.decoder.JSONDecodeError:
                 continue
-        print(f'Wins against enemy heroes with id {enemy_heroes_list}= {wins}')
-        print(f'Losses against enemy heroes with id {enemy_heroes_list}= {losses}')
+
+        return wins, losses, best_heroes_against, enemy_heroes_list
         
     except FileNotFoundError:
         printnl(f'could not find the .csv file at path: {path_to_pro_team_matches_data_csv}')
+
+
+def getHeroesData():
+    hero_data = requests.get('https://api.opendota.com/api/heroes')
+    hero_data_json = json.loads(hero_data.text)
+    df = pd.DataFrame.from_dict(hero_data_json)
+    return df
 
 
 def main():
     # Logging Config
     # logging.basicConfig(filename=f'main-log-{str(time.time())}.log', filemode='w', format='%(name)s - %(levelname)s - %(message)s', level=logging.DEBUG)  
 
-    # populatePlayerMatchesDataInCsv(108755293)
+    heroes_data = getHeroesData()
+    heroes_data.rename(columns = {'id':'hero_id'}, inplace = True)
+
+    account_id = 108755293
+    # populatePlayerMatchesDataInCsv(account_id)
+
     path_player_matches_data = "player-108755293-matches.csv"
-    # getOverallPlayerAnalysis(path_player_matches_data)
-    # getHeroPerformanceAgainst(path, 1, 4)
-    # getProTeamMatches(2586976)
+    getOverallPlayerAnalysis(path_player_matches_data)
+
+    team_id = 2586976
+    # getProTeamMatches(team_id)
+
     path_pro_team_matches_data = "team-2586976-matches.csv"
-    enemy_heroes_list = [97, 98, 20]
-    draftAssistant(path_pro_team_matches_data, enemy_heroes_list)
+    enemy_heroes_list = [2, 7]
+    wins, losses, best_heroes_against, enemy_heroes_list = draftAssistant(path_pro_team_matches_data, enemy_heroes_list)
+    try:
+        df_enemy_heroes = pd.DataFrame(enemy_heroes_list, columns=['hero_id'])
+        df_enemy_heroes_mapped = pd.merge(df_enemy_heroes, heroes_data, on=['hero_id'])
+        enemies = df_enemy_heroes_mapped["localized_name"].values
+        if (wins + losses) > 0:
+            printnl(f'Wins against enemy heroes {enemies}= {wins}')
+            printnl(f'Losses against enemy heroes with ids {enemies}= {losses}')
+            if len(best_heroes_against) > 0:
+                df_best_heroes_against = pd.DataFrame.from_dict(dict(sorted(best_heroes_against.items(), key=operator.itemgetter(1), reverse=True)[:5]), orient='index', columns=['wins'])
+                best_heroes_against_mapped = pd.merge(df_best_heroes_against, heroes_data, left_index=True ,right_on=['hero_id'])
+                best_heroes_against_mapped_hero_names = best_heroes_against_mapped["localized_name"].values
+                printnl(f'Best heroes against the enemy line-up= {best_heroes_against_mapped_hero_names}')
+            else:
+                printnl(f'Insufficient data to suggest picks')
+        else:
+            printnl(f'Insufficient data for enemy heroes with ids {enemies}')
+    except ValueError:
+        printnl(f'No data found')
 
 
 if __name__ == "__main__":
