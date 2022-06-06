@@ -3,7 +3,6 @@ import time
 import json
 import time
 import csv
-import math
 import operator
 
 # External Libraries
@@ -294,39 +293,21 @@ def draftAssistant(path_to_pro_team_matches_data_csv, enemy_heroes_list):
         best_heroes_against = {}
         for index, row in df_picks_bans.iterrows():
             try:
-                picks_bans = json.loads(str(row['picks_bans']).replace("'", '"').replace('False','"FALSE"').replace('True', '"TRUE"'))
-                heroes_matched = 0
-                for pick_ban in picks_bans:
-                    if row['radiant'] and pick_ban['team'] == 1:
-                        if pick_ban['hero_id'] in enemy_heroes_list:
-                            heroes_matched += 1
-                        if heroes_matched == len(enemy_heroes_list):
-                            if row['radiant_win']:
-                                wins += 1
-                                for pick in picks_bans:
-                                    if pick['team'] == 0:
-                                        if pick['hero_id'] in best_heroes_against:
-                                            best_heroes_against.update({pick['hero_id']: (best_heroes_against.get(pick['hero_id']) + 1)})
-                                        else:
-                                            best_heroes_against.update({pick['hero_id']: 1})
-                            else:
-                                losses += 1
-                            break
-                    elif not row['radiant'] and pick_ban['team'] == 0:
-                        if pick_ban['hero_id'] in enemy_heroes_list:
-                            heroes_matched += 1
-                        if heroes_matched == len(enemy_heroes_list):
-                            if row['radiant_win']:
-                                losses += 1
-                            else:
-                                wins += 1
-                                for pick in picks_bans:
-                                    if pick['team'] == 1:
-                                        if pick['hero_id'] in best_heroes_against:
-                                            best_heroes_against.update({pick['hero_id']: (best_heroes_against.get(pick['hero_id']) + 1)})
-                                        else:
-                                            best_heroes_against.update({pick['hero_id']: 1})
-                            break
+                picks_bans = json.loads(str(row['picks_bans'])
+                    .replace("'", '"')
+                    .replace('False','"FALSE"')
+                    .replace('True', '"TRUE"'))
+                picks_bans_df = pd.json_normalize(picks_bans)
+                if row['radiant']:
+                    _wins, _losses, _best_heroes_against = getDetailsAgainst(enemy_heroes_list, row, picks_bans_df, 1, 0, best_heroes_against)
+                    wins += _wins
+                    losses += _losses
+                    best_heroes_against = _best_heroes_against
+                else:
+                    _wins, _losses, _best_heroes_against = getDetailsAgainst(enemy_heroes_list, row, picks_bans_df, 0, 1, best_heroes_against)
+                    wins += _wins
+                    losses += _losses
+                    best_heroes_against = _best_heroes_against
             except json.decoder.JSONDecodeError:
                 continue
 
@@ -343,6 +324,25 @@ def getHeroesData():
     return df
 
 
+def getDetailsAgainst(enemy_heroes_list, row, picks_bans_df, enemy_team_id, ally_team_id, best_heroes_against):
+    wins = 0
+    losses = 0
+    if picks_bans_df.where((picks_bans_df['team'] == enemy_team_id) & (picks_bans_df['is_pick'] == 'TRUE')) \
+        [picks_bans_df['hero_id']
+        .isin(enemy_heroes_list)]['hero_id'].count() == len(enemy_heroes_list):
+        condition = row['radiant_win'] if enemy_team_id == 1 else not row['radiant_win']
+        if condition:
+            wins += 1
+            for hero_id in picks_bans_df.loc[(picks_bans_df['team'] == ally_team_id) & (picks_bans_df['is_pick'] == 'TRUE')]['hero_id'].values:
+                if hero_id in best_heroes_against:
+                    best_heroes_against.update({hero_id: best_heroes_against.get(hero_id) + 1})
+                else:
+                    best_heroes_against.update({hero_id: 1})
+        else:
+            losses += 1
+    return wins, losses, best_heroes_against
+
+
 def main():
     # Logging Config
     # logging.basicConfig(filename=f'main-log-{str(time.time())}.log', filemode='w', format='%(name)s - %(levelname)s - %(message)s', level=logging.DEBUG)  
@@ -354,13 +354,13 @@ def main():
     # populatePlayerMatchesDataInCsv(account_id)
 
     path_player_matches_data = "player-108755293-matches.csv"
-    getOverallPlayerAnalysis(path_player_matches_data)
+    # getOverallPlayerAnalysis(path_player_matches_data)
 
     team_id = 2586976
     # getProTeamMatches(team_id)
 
     path_pro_team_matches_data = "team-2586976-matches.csv"
-    enemy_heroes_list = [2, 7]
+    enemy_heroes_list = [2, 10]
     wins, losses, best_heroes_against, enemy_heroes_list = draftAssistant(path_pro_team_matches_data, enemy_heroes_list)
     try:
         df_enemy_heroes = pd.DataFrame(enemy_heroes_list, columns=['hero_id'])
